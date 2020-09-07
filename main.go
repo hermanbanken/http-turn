@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"flag"
 	"log"
 	"net"
@@ -11,6 +14,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/pion/turn/v2"
 	"github.com/soheilhy/cmux"
@@ -63,6 +67,9 @@ func main() {
 		httpServer := &http.Server{Handler: httputil.NewSingleHostReverseProxy(remoteURL)}
 		go httpServer.Serve(httpL)
 		go httpServer.Serve(http2L)
+		log.Printf("Serving a HTTP reverse proxy for %s", remoteURL.String())
+		go m.Serve()
+		log.Printf("Serving cMux on TCP :%d", *port)
 	}
 
 	// Cache -users flag for easy lookup later
@@ -79,10 +86,22 @@ func main() {
 		// Return the key for that user, or false when no user is found
 		AuthHandler: func(username string, realm string, srcAddr net.Addr) ([]byte, bool) {
 			log.Printf("Authentication username=%q realm=%q srcAddr=%v\n", username, realm, srcAddr)
+			t, err := strconv.Atoi(username)
+			if err != nil {
+				log.Printf("Invalid username %q", username)
+				return nil, false
+			}
+			if int64(t) < time.Now().Unix() {
+				log.Printf("Expired username %q", username)
+				return nil, false
+			}
+			password := longTermCredentials(username, *authSecret)
+			log.Printf("Generated password %q\n", password)
+			return turn.GenerateAuthKey(username, realm, password), true
 			// if key, ok := usersMap[username]; ok {
 			// 	return key, true
 			// }
-			return nil, false
+			// return nil, false
 		},
 		// PacketConnConfigs is a list of UDP Listeners and the configuration around them
 		PacketConnConfigs: []turn.PacketConnConfig{
@@ -117,4 +136,11 @@ func main() {
 	if err = s.Close(); err != nil {
 		log.Panic(err)
 	}
+}
+
+func longTermCredentials(username string, sharedSecret string) string {
+	mac := hmac.New(sha1.New, []byte(sharedSecret))
+	mac.Write([]byte(username))
+	password := mac.Sum(nil)
+	return base64.StdEncoding.EncodeToString(password)
 }
